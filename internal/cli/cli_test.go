@@ -153,3 +153,12 @@ func TestVersion(t *testing.T) {
 		t.Fatalf("fallback: %q", out.String())
 	}
 }
+
+func TestHelp(t *testing.T) {
+	for _, a := range []string{"help", "-h", "--help"} {
+		var out bytes.Buffer
+		if code := cli.Run(&cli.Env{Args: []string{a}, Stdout: &out}); code != 0 || !strings.Contains(out.String(), "decrypt --key") {
+			t.Fatalf("%s: exit %d out %q", a, code, out.String())
+		}
+	}
+}

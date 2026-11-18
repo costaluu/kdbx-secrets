@@ -96,7 +96,11 @@ func dispatch(env *Env) error {
 	if len(env.Args) == 0 {
 		return usagef("missing command (one of: %s)", strings.Join(names(), ", "))
 	}
-	c, ok := commands[env.Args[0]]
+	name := env.Args[0]
+	if name == "-h" || name == "--help" {
+		name = "help"
+	}
+	c, ok := commands[name]
 	if !ok {
 		return usagef("unknown command %q (one of: %s)", env.Args[0], strings.Join(names(), ", "))
 	}
