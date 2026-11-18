@@ -1,0 +1,81 @@
+name: release
+
+on:
+  push:
+    tags: ["v*.*.*"]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - run: go vet ./...
+      - run: go test -race ./...
+
+  publish:
+    needs: test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: build
+        env:
+          CGO_ENABLED: "0"
+          VERSION: ${{ github.ref_name }}
+        run: |
+          mkdir dist
+          for t in linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/amd64; do
+            os="${t%/*}"; arch="${t#*/}"; ext=""
+            [ "$os" = windows ] && ext=".exe"
+            GOOS="$os" GOARCH="$arch" go build -trimpath \
+              -ldflags "-X main.version=${VERSION}" \
+              -o "dist/kdbx-secrets-${os}-${arch}${ext}" ./cmd/kdbx-secrets
+          done
+          cd dist && sha256sum kdbx-secrets-* > SHA256SUMS
+      - uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: dist/kdbx-secrets-*
+      - name: release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" dist/* --title "$GITHUB_REF_NAME" --generate-notes
+
+  smoke:
+    needs: publish
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: install.sh
+        if: runner.os != 'Windows'
+        env:
+          KDBX_SECRETS_BIN_DIR: ${{ runner.temp }}/bin
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          sh install.sh
+          out=$("$KDBX_SECRETS_BIN_DIR/kdbx-secrets" version)
+          echo "$out"
+          case "$out" in *"$GITHUB_REF_NAME"*) ;; *) echo "unexpected version" >&2; exit 1 ;; esac
+      - name: install.ps1
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          KDBX_SECRETS_BIN_DIR: ${{ runner.temp }}\bin
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          ./install.ps1
+          $out = & "$env:KDBX_SECRETS_BIN_DIR\kdbx-secrets.exe" version
+          Write-Host $out
+          if ("$out" -notlike "*$env:GITHUB_REF_NAME*") { throw 'unexpected version' }
