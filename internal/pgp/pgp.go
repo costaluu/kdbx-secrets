@@ -129,14 +129,23 @@ func Decrypt(msg []byte, el openpgp.EntityList, pass []byte) ([]byte, error) {
 			return nil, fmt.Errorf("reading message: %w", err)
 		}
 	}
+	// Stop at the encrypted data packet: its body is ciphertext, and reading on
+	// would parse random bytes as packet headers (a stray tag 9 = false alarm).
 	pr := packet.NewReader(bytes.NewReader(bin))
+scan:
 	for {
 		p, err := pr.Next()
 		if err != nil {
 			break
 		}
-		if se, ok := p.(*packet.SymmetricallyEncrypted); ok && !se.IntegrityProtected {
-			return nil, errors.New("message has no integrity protection (MDC/AEAD), refusing to decrypt")
+		switch p := p.(type) {
+		case *packet.SymmetricallyEncrypted:
+			if !p.IntegrityProtected {
+				return nil, errors.New("message has no integrity protection (MDC/AEAD), refusing to decrypt")
+			}
+			break scan
+		case *packet.AEADEncrypted:
+			break scan
 		}
 	}
 	md, err := openpgp.ReadMessage(bytes.NewReader(bin), el, nil, nil)
