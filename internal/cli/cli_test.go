@@ -22,6 +22,7 @@ type harness struct {
 	termOut       bytes.Buffer
 	terminalOpens int
 	stdin         string
+	env           map[string]string // extra environment (KDBX_SECRETS_HOME is set)
 }
 
 type fakeTerm struct{ h *harness }
@@ -48,8 +49,13 @@ func newHarness(t *testing.T, database string) *harness {
 
 func (h *harness) run(args ...string) int {
 	return cli.Run(&cli.Env{
-		Args:   args,
-		Getenv: func(k string) string { return map[string]string{"KDBX_SECRETS_HOME": h.home}[k] },
+		Args: args,
+		Getenv: func(k string) string {
+			if k == "KDBX_SECRETS_HOME" {
+				return h.home
+			}
+			return h.env[k]
+		},
 		Stdin:  strings.NewReader(h.stdin),
 		Stdout: &h.stdout,
 		Stderr: &h.errw,
@@ -82,6 +88,27 @@ func TestGetPasswordFromEveryKDB(t *testing.T) {
 				t.Fatal("prompt should have been written to the terminal")
 			}
 		})
+	}
+}
+
+// Files written by KeePassXC 2.8.0 (testdata/gen-fixtures.sh, pending item 1).
+func TestGetFromKeePassXCFiles(t *testing.T) {
+	for f, want := range map[string]string{
+		"argon2d":   "s3cr3t-value\nkxuser\nkx-value\n",
+		"argon2id":  "s3cr3t-value\nkxuser\nkx-value\n",
+		"aes-kdbx4": "s3cr3t-value\nkxuser\nkx-value\n",
+		"aes-kdbx3": "s3cr3t-value\nkxuser\nkx-value\n",
+	} {
+		t.Run(f, func(t *testing.T) {
+			h := newHarness(t, fixture("keepassxc/"+f+".kdbx"))
+			if code := h.run("get", "--show", "AWS/paper-freeze", "AWS/keepassxc#UserName", "AWS/keepassxc"); code != 0 || h.stdout.String() != want {
+				t.Fatalf("exit %d out %q err %s", code, h.stdout.String(), h.errw.String())
+			}
+		})
+	}
+	h := newHarness(t, fixture("keepassxc/rich.kdbx"))
+	if code := h.run("get", "--show", "AWS/rich", "AWS/rich#api_token", "AWS/rich#URL"); code != 0 || h.stdout.String() != "rich-pass-2\ntok-123\nhttps://example.com\n" {
+		t.Fatalf("exit %d out %q err %s", code, h.stdout.String(), h.errw.String())
 	}
 }
 

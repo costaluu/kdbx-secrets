@@ -4,6 +4,7 @@ package ref
 
 import (
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -151,6 +152,9 @@ func Resolve(d *db.DB, r Ref, now time.Time) (Result, error) {
 
 const attachmentPrefix = "attachment:"
 
+// errNotFound marks a missing group or entry on a path, which Plan may create.
+var errNotFound = errors.New("not found")
+
 // resolveReserved handles #TOTP and #attachment:<name>, which never come from
 // the entry's attributes.
 func resolveReserved(d *db.DB, e *kp.Entry, r Ref, now time.Time) (Result, error) {
@@ -217,7 +221,7 @@ func find(d *db.DB, r Ref) (*kp.Entry, error) {
 			}
 		}
 		if len(next) == 0 {
-			return nil, fmt.Errorf("reference %q: group %q not found", r, name)
+			return nil, fmt.Errorf("reference %q: group %q %w", r, name, errNotFound)
 		}
 		front = next
 	}
@@ -234,7 +238,7 @@ func find(d *db.DB, r Ref) (*kp.Entry, error) {
 	}
 	switch {
 	case len(found) == 0:
-		return nil, fmt.Errorf("reference %q: entry not found", r)
+		return nil, fmt.Errorf("reference %q: entry %w", r, errNotFound)
 	case len(found) > 1:
 		var ids []string
 		for _, e := range found {

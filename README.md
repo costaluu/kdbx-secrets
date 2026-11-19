@@ -1,6 +1,6 @@
 # kdbx-secrets
 
-A Go CLI that delivers secrets stored in a KeePass Database (`.kdbx`) to the tools that need them, without writing secrets to disk and without environment variables. The only thing you type is the KeePass password, at the moment of use. Each command opens the Database, answers, wipes what it can and exits (no daemon, no cache). The Database is only read, never written.
+A Go CLI that delivers secrets stored in a KeePass Database (`.kdbx`) to the tools that need them, without writing secrets to disk and without environment variables. The only thing you type is the KeePass password, at the moment of use. Each command opens the Database, answers, wipes what it can and exits (no daemon, no cache). The binary only reads the Database; `adapter fill` has `keepassxc-cli` add missing values, never changing existing ones.
 
 More details: [CONTEXT.md](CONTEXT.md), [GLOSSARY.md](GLOSSARY.md), [spec](docs/specs/kdbx-secrets.md) and [ADRs](docs/adr/).
 
@@ -52,6 +52,7 @@ A **Reference** is `Group/Entry#Field`, without the Root group name. Without `#`
 - `kdbx-secrets get [--show] <reference>...`: one value per line, with a single prompt. Refuses to write to a terminal without `--show`.
 - `kdbx-secrets render [--show] <name>`: runs the template `~/.kdbx-secrets/templates/<name>.tmpl` (`text/template`, with `get`, `json` and `base64`).
 - `kdbx-secrets adapter create <name> [--from <file>] [--force] | delete <name> | list`: manages the templates (validates before writing; refuses to overwrite without `--force`).
+- `kdbx-secrets adapter fill <name>`: asks for every value the template uses that is missing in the Database (Password hidden) and has `keepassxc-cli` write them, creating missing groups and Entries. Never changes a value already set. Only UserName, Password, URL and Notes can be filled; custom attributes, `#TOTP` and `#attachment:` must be added in KeePassXC. Needs `keepassxc-cli` on `PATH` or `KEEPASSXC_CLI` (e.g. `flatpak run --command=keepassxc-cli org.keepassxc.KeePassXC`) ([ADR 0006](docs/adr/0006-create-only-writes.md)).
 - `kdbx-secrets encrypt (-r <public-key-file> | --to <reference>)...`: encrypts stdin to OpenPGP (armored) for the recipients, repeatable and combinable. `-r` does not ask for a password; `--to` reads the public key from the Database.
 - `kdbx-secrets decrypt --key <reference> [--show]`: decrypts stdin with the private key held in the Database (the key's passphrase is the Password of the same Entry, if the key is encrypted). Refuses to write to a terminal without `--show` and only writes after integrity has been verified.
 - `kdbx-secrets run --vault <mount>/<path>=<entry-reference> [--vault ...] -- <command> [args]`: runs the command with `VAULT_ADDR` and `VAULT_TOKEN` pointing at a local, read-only imitation of the Vault KV v2 API that serves only the mapped Entries. If the command dies from a signal, `run` exits with 128+signal.
@@ -65,6 +66,17 @@ kdbx-secrets decrypt --key GPG/personal#attachment:priv.asc < msg.asc
 kdbx-secrets run --vault secret/aws=AWS/paper-freeze -- vault kv get secret/aws
 ```
 
+### Convention: one secret per Entry
+
+`adapter fill` writes only UserName, Password, URL and Notes. When a credential has more than two parts, give each secret its own Entry and keep it in Password, instead of using custom attributes:
+
+```
+Azure/app/client-secret   UserName = client id, Password = client secret
+Azure/app/tenant          Password = tenant id
+```
+
+Configuration that is not secret (region, account id, host) goes straight into the template, not into the Database. TOTP seeds and keys/certificates (Attachments) are set up in KeePassXC, which is where you enable 2FA or import a key anyway.
+
 ### Example: `paper-freeze`
 
 The Entry `AWS/paper-freeze` stores the access key id in UserName and the secret in Password. Template `aws-paper-freeze`:
@@ -75,6 +87,7 @@ The Entry `AWS/paper-freeze` stores the access key id in UserName and the secret
 
 ```sh
 kdbx-secrets adapter create aws-paper-freeze --from aws-paper-freeze.tmpl
+kdbx-secrets adapter fill aws-paper-freeze   # asks for the key id and secret if the Entry lacks them
 ```
 
 In `~/.aws/config`:

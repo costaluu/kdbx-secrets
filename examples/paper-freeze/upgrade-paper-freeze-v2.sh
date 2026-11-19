@@ -11,10 +11,10 @@
 #    - com v1 (ou v2):   reaproveita bucket/prefixo/região do bloco existente e
 #                        o substitui pelo bloco v2 (backup 600 do rc antes).
 #
-#  Pré-requisitos: aws CLI, git e `secrets` configurado (KDBX_SECRETS_HOME
+#  Pré-requisitos: aws CLI, git, keepassxc-cli (ou KEEPASSXC_CLI) e `secrets` configurado (KDBX_SECRETS_HOME
 #  exportado, se não usar ~/.kdbx-secrets). Suporta bash e zsh (não fish).
 #
-#  Ordem: template → profile no ~/.aws/config → Entry no KeePass → teste do
+#  Ordem: template → profile no ~/.aws/config → Entry no KeePass (adapter fill) → teste do
 #  profile → só então o rc é alterado. Rodar de novo é seguro.
 # ==============================================================================
 set -euo pipefail
@@ -93,15 +93,15 @@ else
   ok "profile $PROFILE adicionado em $AWS_CONFIG"
 fi
 
-# ── 3. Entry no KeePass ────────────────────────────────────────────────────────
+# ── 3. Entry no KeePass (o próprio secrets grava o que faltar) ─────────────────
 echo
-say "Crie (ou confira) no seu KeePass a Entry $ENTRY:"
-echo "      UserName = Access Key ID"
-echo "      Password = Secret Access Key"
+say "Entry $ENTRY: UserName = Access Key ID, Password = Secret Access Key."
 grep -qs '^export PAPER_FREEZE_AWS_SECRET=' "${RC_FILES[@]}" &&
   echo "    (os valores atuais estão em PAPER_FREEZE_AWS_KEY / PAPER_FREEZE_AWS_SECRET no rc)"
-echo "    Salve o banco e tecle Enter para testar (Ctrl+C cancela; o rc ainda não foi alterado)."
-read -r < /dev/tty
+echo "    O secrets pede a senha do banco e só os valores que faltarem; nada existente é alterado."
+echo "    Feche o banco no KeePassXC se ele tiver alterações não salvas."
+"$SECRETS" adapter fill "$TEMPLATE" ||
+  die "não consegui gravar a Entry $ENTRY; o rc não foi alterado."
 
 # ── 4. Teste — só segue se o profile autenticar ────────────────────────────────
 say "Testando o profile (o secrets vai pedir a senha do banco)..."

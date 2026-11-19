@@ -13,25 +13,43 @@ import (
 // config, Database file/header, prompt, open. Callers must already have checked
 // arguments and syntax. why names what is requested (shown in the prompt).
 func (env *Env) unlock(why string) (*db.DB, error) {
-	cfg, err := config.Load(env.Getenv, env.HomeDir)
+	d, term, err := env.unlockTerm(why, nil)
 	if err != nil {
 		return nil, err
 	}
+	term.Close()
+	return d, nil
+}
+
+// unlockTerm is unlock that, on success, hands back the open terminal for
+// further prompts (the caller closes it) and, if keep is set, passes it the
+// password before the buffer is wiped.
+func (env *Env) unlockTerm(why string, keep func(pw []byte)) (_ *db.DB, term Terminal, err error) {
+	defer func() {
+		if err != nil && term != nil {
+			term.Close()
+			term = nil
+		}
+	}()
+	cfg, err := config.Load(env.Getenv, env.HomeDir)
+	if err != nil {
+		return nil, term, err
+	}
 	kdf, err := db.CheckFile(cfg.Database)
 	if err != nil {
-		return nil, fmt.Errorf("database %s: %w", cfg.Database, err)
+		return nil, term, fmt.Errorf("database %s: %w", cfg.Database, err)
 	}
 	if env.Harden != nil {
 		env.Harden(kdf.MemoryBytes) // before any secret enters memory
 	}
 	if env.OpenTerminal == nil {
-		return nil, errors.New("no terminal available for the password prompt")
+		return nil, term, errors.New("no terminal available for the password prompt")
 	}
-	term, err := env.OpenTerminal()
+	t, err := env.OpenTerminal()
 	if err != nil {
-		return nil, fmt.Errorf("no terminal available for the password prompt: %w", err)
+		return nil, nil, fmt.Errorf("no terminal available for the password prompt: %w", err)
 	}
-	defer term.Close()
+	term = t
 	who := "unknown caller"
 	if env.ParentChain != nil {
 		if c := env.ParentChain(); c != "" {
@@ -44,21 +62,24 @@ func (env *Env) unlock(why string) (*db.DB, error) {
 	for attempt := 1; ; attempt++ {
 		pw, err := prompt.Password(term, msg, buf)
 		if err != nil {
-			return nil, err
+			return nil, term, err
 		}
 		d, err := db.Open(cfg.Database, pw)
+		if err == nil && keep != nil {
+			keep(pw)
+		}
 		clear(buf)
 		if errors.Is(err, db.ErrWrongPassword) {
 			if attempt == maxAttempts {
-				return nil, fmt.Errorf("incorrect password (%d attempts)", maxAttempts)
+				return nil, term, fmt.Errorf("incorrect password (%d attempts)", maxAttempts)
 			}
 			fmt.Fprintln(term, "incorrect password, try again")
 			continue
 		}
 		if err != nil {
-			return nil, fmt.Errorf("database %s: %w", cfg.Database, err)
+			return nil, term, fmt.Errorf("database %s: %w", cfg.Database, err)
 		}
-		return d, nil
+		return d, term, nil
 	}
 }
 

@@ -1,38 +1,38 @@
 #!/bin/sh
-# Regenerates the committed .kdbx fixtures with keepassxc-cli (pending item 1).
+# Regenerates testdata/keepassxc/*.kdbx with keepassxc-cli (pending item 1).
 # The CI never runs this script; the generated files are committed.
 #
-# Requires keepassxc-cli >= 2.7. Every fixture uses the master password below
-# and holds one entry AWS/paper-freeze (UserName AKIAFIXTURE, Password
-# s3cr3t-value) under the root group.
+# Tested with keepassxc-cli 2.8.0 (flatpak). Its db-create has no KDF flag, so
+# the KDF variants are made by letting KeePassXC open and re-save the
+# gokeepasslib fixtures (testdata/*.kdbx) while adding the Entry
+# AWS/keepassxc: the result is a file written by KeePassXC, and it proves that
+# KeePassXC reads the KDF parameters gokeepasslib writes.
 #
-# STATUS: UNTESTED. Written for ticket 01 on a machine without keepassxc-cli;
-# the files currently in testdata/ were produced by tools/genfixtures
-# (gokeepasslib writer) instead. Run this script once on a machine with
-# KeePassXC, run `go test ./...`, and commit the result to close pending item 1
-# for real (see docs/pending-1-fixtures.md).
+# rich.kdbx is imported from rich.xml (custom icon, tags, colours, protected
+# custom attribute, AutoType association, entry CustomData), then gets an
+# attachment and an edit (History) through the CLI.
+# Note: `import` segfaults on Protected="True" in plain XML; use
+# ProtectInMemory="True" as KeePassXC's own export does.
 #
-# KDF selection: flag names vary between keepassxc-cli versions. Adjust the
-# make_db lines to what `keepassxc-cli db-create --help` shows. If your version
-# has no KDF flag, create the databases once in the KeePassXC GUI (Database >
-# Database Settings > Encryption: Argon2d, Argon2id, AES-KDF, low cost) with
-# the same password and entry.
+#   KEEPASSXC_CLI="flatpak run --command=keepassxc-cli org.keepassxc.KeePassXC" testdata/gen-fixtures.sh
+# (flatpak also needs --filesystem=<repo>/testdata before --command.)
 set -eu
 
 PASS='fixture-pass'
-OUT="$(dirname "$0")"
+T="$(cd "$(dirname "$0")" && pwd)"
+O="$T/keepassxc"
 CLI="${KEEPASSXC_CLI:-keepassxc-cli}"
-command -v "$CLI" >/dev/null || { echo "keepassxc-cli not found" >&2; exit 1; }
+export LC_ALL=C.UTF-8 LANGUAGE=en # the root group name is localized
+K() { $CLI "$@"; }
 
-make_db() { # <file> <db-create flags...>
-  f="$OUT/$1"; shift
-  rm -f "$f"
-  printf '%s\n%s\n' "$PASS" "$PASS" | "$CLI" db-create -p "$@" "$f"
-  printf '%s\n%s\n' "$PASS" 's3cr3t-value' |
-    "$CLI" add -u AKIAFIXTURE -p "$f" AWS/paper-freeze
-}
+for f in argon2d argon2id aes-kdbx4 aes-kdbx3; do
+  cp "$T/$f.kdbx" "$O/$f.kdbx"
+  printf '%s\n%s\n' "$PASS" 'kx-value' | K add -q -u kxuser -p "$O/$f.kdbx" AWS/keepassxc
+done
 
-make_db argon2d.kdbx   --kdf argon2d  --decryption-time 100
-make_db argon2id.kdbx  --kdf argon2id --decryption-time 100
-make_db aes-kdbx4.kdbx --kdf aes256   --decryption-time 100
-echo "aes-kdbx3.kdbx must be made in the GUI (Database format: KDBX 3.1)."
+rm -f "$O/rich.kdbx"
+printf '%s\n%s\n' "$PASS" "$PASS" | K import -q -p -t 100 "$O/rich.xml" "$O/rich.kdbx"
+key="$O/.key.bin"; printf 'secret\000bytes\377' > "$key"
+printf '%s\n' "$PASS" | K attachment-import -q "$O/rich.kdbx" AWS/rich key.bin "$key"
+rm -f "$key"
+printf '%s\n%s\n' "$PASS" 'rich-pass-2' | K edit -q -p "$O/rich.kdbx" AWS/rich

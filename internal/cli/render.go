@@ -55,24 +55,7 @@ func cmdRender(env *Env, args []string) error {
 	if err := env.guardSecretOut(show); err != nil {
 		return err
 	}
-	dir, err := config.Dir(env.Getenv, env.HomeDir)
-	if err != nil {
-		return err
-	}
-	path := filepath.Join(dir, "templates", name+".tmpl")
-	if _, err := os.Stat(path); err == nil {
-		if err := config.CheckPrivate(path); err != nil {
-			return err
-		}
-	}
-	src, err := os.ReadFile(path)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return fmt.Errorf("template %s not found", name)
-		}
-		return err
-	}
-	t, refs, seen, err := collectTmpl(name, string(src))
+	t, refs, seen, err := loadTmpl(env, name)
 	if err != nil {
 		return err
 	}
@@ -105,6 +88,29 @@ func cmdRender(env *Env, args []string) error {
 	defer env.hold(out.Bytes())()
 	_, err = env.Stdout.Write(out.Bytes())
 	return err
+}
+
+// loadTmpl reads the registered template name (permission-checked) and runs
+// collectTmpl on it.
+func loadTmpl(env *Env, name string) (*template.Template, []string, map[string]ref.Ref, error) {
+	dir, err := config.Dir(env.Getenv, env.HomeDir)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	path := filepath.Join(dir, "templates", name+".tmpl")
+	if _, err := os.Stat(path); err == nil {
+		if err := config.CheckPrivate(path); err != nil {
+			return nil, nil, nil, err
+		}
+	}
+	src, err := os.ReadFile(path)
+	if os.IsNotExist(err) {
+		return nil, nil, nil, fmt.Errorf("template %s not found", name)
+	}
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	return collectTmpl(name, string(src))
 }
 
 // collectTmpl parses src and runs the collection pass (no prompt, no Database):

@@ -150,7 +150,7 @@ Actors: **user** (whoever uses the binary), **maintainer** (whoever publishes ve
 ### Architecture
 
 - **One password per run, no daemon** (ADR 0001). Each command opens the Database from disk, answers and exits; `run` is the only long process and lasts as long as the child. **Trigger to revisit** (recorded in the ADR): a real workflow that asks for the password several times in a row or a KDF too slow per call. In that case, the path is an on-demand daemon with a short TTL.
-- **Read-only.** The binary never writes to the Database.
+- **The binary never writes the Database** (ADR 0006). `adapter fill` has `keepassxc-cli` add what a template needs (standard fields only), never changing a value already set.
 - **Password-only unlocking.** No keyfile, YubiKey or sealed password.
 - **Native Go reader** (`gokeepasslib`) instead of `keepassxc-cli`, the browser protocol or Secret Service: it is the only one that works on the three OSes, without a GUI, and reads Attachments (see the study).
 - **OpenPGP with `ProtonMail/go-crypto`** (ADR 0002): compatible with `gpg` for v4 keys.

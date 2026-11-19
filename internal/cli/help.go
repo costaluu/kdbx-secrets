@@ -16,6 +16,9 @@ commands:
       runs the template ~/.kdbx-secrets/templates/<name>.tmpl
   adapter create <name> [--from <file>] [--force] | delete <name> | list
       manages the templates
+  adapter fill <name>
+      asks for the missing values the template needs and has keepassxc-cli
+      write them (never changes a value already set; KEEPASSXC_CLI overrides)
   encrypt (-r <public-key-file> | --to <reference>)...
       encrypts stdin to OpenPGP (armored) for the recipients
   decrypt --key <reference> [--show]
