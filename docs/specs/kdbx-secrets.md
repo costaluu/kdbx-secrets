@@ -207,6 +207,8 @@ Actors: **user** (whoever uses the binary), **maintainer** (whoever publishes ve
   - Starts the child with the inherited environment plus `VAULT_ADDR` and `VAULT_TOKEN`.
   - Ignores SIGINT and forwards SIGTERM and SIGHUP.
   - Ties the child to the parent: `PR_SET_PDEATHSIG(SIGTERM)` on Linux, a Job Object with `KILL_ON_JOB_CLOSE` on Windows. On macOS, the child survives and the calls to the Vault fail.
+  - Redacts the child's stdout/stderr: every served Password of 8+ bytes and any value with a 16+ char alphanumeric run of entropy >= 3.5 bits/char (also JSON-escaped) becomes `*****`. A tail that may start a value is held until more output or 100 ms idle. On Linux, a terminal output gets a PTY with `OPOST` off; elsewhere a pipe. `--disable-redaction` turns it off.
+  - `--command '<shell>'` runs the string with `sh -c` (`cmd /C` on Windows), instead of `-- <command>`.
   - Exits with the child's code.
 - **OpenPGP.**
   - `encrypt` accepts `-r <file>` (no prompt) and `--to <ref>` (with a prompt), repeatable and combinable, with at least one recipient.
@@ -224,7 +226,7 @@ Actors: **user** (whoever uses the binary), **maintainer** (whoever publishes ve
 - `get <ref> [<ref>...]`
 - `render <name>`
 - `adapter create <name> [--from <file>] [--force]`, `adapter delete <name>`, `adapter list`
-- `run --vault <mount>/<path>=<entry-ref> [--vault ...] -- <command> [args]`
+- `run --vault <mount>/<path>=<entry-ref> [--vault ...] [--disable-redaction] (--command '<shell>' | -- <command> [args])`
 - `encrypt (-r <file> | --to <ref>)...`, `decrypt --key <ref>`
 - `version`
 - `--show` on `get`, `render` and `decrypt`.

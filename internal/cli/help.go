@@ -23,8 +23,10 @@ commands:
       encrypts stdin to OpenPGP (armored) for the recipients
   decrypt --key <reference> [--show]
       decrypts stdin with the private key held in the Database
-  run --vault <mount>/<path>=<entry-reference> [--vault ...] -- <command> [args]
-      runs the command against a local, read-only Vault KV v2 imitation
+  run --vault <mount>/<path>=<entry-reference> [--vault ...] [--disable-redaction]
+      (--command '<shell>' | -- <command> [args])
+      runs the command against a local, read-only Vault KV v2 imitation;
+      served secrets are replaced by ***** in its stdout/stderr
   version
       prints the version
   help

@@ -2,6 +2,7 @@ package cli_test
 
 import (
 	"bufio"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net"
@@ -9,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"regexp"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -21,6 +23,9 @@ func TestMain(m *testing.M) {
 	switch os.Getenv("KS_HELPER") {
 	case "probe":
 		probe()
+		os.Exit(0)
+	case "leak":
+		leak()
 		os.Exit(0)
 	case "exit7":
 		os.Exit(7)
@@ -71,6 +76,57 @@ func probe() {
 	}
 	for _, e := range os.Environ() {
 		fmt.Println("env", e)
+	}
+}
+
+// leak prints the served Password raw, JSON-escaped, split across two writes
+// and to stderr, plus the UserName (low entropy: must stay visible).
+func leak() {
+	req, _ := http.NewRequest("GET", os.Getenv("VAULT_ADDR")+"/v1/secret/data/aws", nil)
+	req.Header.Set("X-Vault-Token", os.Getenv("VAULT_TOKEN"))
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		fmt.Println("ERR", err)
+		return
+	}
+	var body struct{ Data struct{ Data map[string]string } }
+	json.NewDecoder(resp.Body).Decode(&body)
+	pw, user := body.Data.Data["Password"], body.Data.Data["UserName"]
+	fmt.Println("raw", pw, user)
+	j, _ := json.Marshal(map[string]string{"k": pw + "\n"})
+	fmt.Println("json", string(j))
+	os.Stdout.WriteString("split " + pw[:4])
+	time.Sleep(20 * time.Millisecond)
+	os.Stdout.WriteString(pw[4:] + "\n")
+	fmt.Fprintln(os.Stderr, "err", pw)
+}
+
+func TestRunRedactsServedSecrets(t *testing.T) {
+	h := newHarness(t, fixture("keepassxc/rich.kdbx"))
+	if code := runWith(t, h, "leak", "run", "--vault", "secret/aws=AWS/paper-freeze", "--", os.Args[0]); code != 0 {
+		t.Fatalf("exit %d: %s", code, h.errw.String())
+	}
+	out, errOut := h.stdout.String(), h.errw.String()
+	want := "raw ***** AKIAFIXTURE\njson {\"k\":\"*****\\n\"}\nsplit *****\n"
+	if out != want || !strings.Contains(errOut, "err *****") || strings.Contains(out+errOut, "s3cr3t") {
+		t.Errorf("stdout %q stderr %q", out, errOut)
+	}
+
+	h = newHarness(t, fixture("keepassxc/rich.kdbx"))
+	runWith(t, h, "leak", "run", "--vault", "secret/aws=AWS/paper-freeze", "--disable-redaction", "--", os.Args[0])
+	if !strings.Contains(h.stdout.String(), "raw s3cr3t-value AKIAFIXTURE") {
+		t.Errorf("--disable-redaction: %q", h.stdout.String())
+	}
+}
+
+func TestRunCommandUsesShell(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("sh")
+	}
+	h := newHarness(t, fixture("derived.kdbx"))
+	code := runWith(t, h, "", "run", "--vault", "secret/aws=AWS/with-totp", "--command", `test -n "$VAULT_TOKEN" && echo ok; exit 3`)
+	if code != 3 || h.stdout.String() != "ok\n" {
+		t.Fatalf("exit %d out %q err %s", code, h.stdout.String(), h.errw.String())
 	}
 }
 
@@ -178,6 +234,11 @@ func TestRunMappingErrorsExitTwoBeforePrompt(t *testing.T) {
 		{"run", "--vault", "secret/../a=AWS/x", "--", "x"},
 		{"run", "--vault", "secret/a=AWS/x#UserName", "--", "x"},
 		{"run", "--vault", "secret/a=a//b", "--", "x"},
+		{"run", "--vault", "secret/a=AWS/x", "--command", "x", "--", "x"},
+		{"run", "--vault", "secret/a=AWS/x", "--command", ""},
+		{"run", "--vault", "secret/a=AWS/x", "--command", "x", "--command", "y"},
+		{"run", "--command", "x"},
+		{"run", "--vault", "secret/a=AWS/x", "--bogus", "--", "x"},
 	} {
 		h := newHarness(t, fixture("derived.kdbx"))
 		if code := runWith(t, h, "", args...); code != 2 || h.terminalOpens != 0 {

@@ -3,12 +3,15 @@ package cli
 import (
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"os/signal"
 	"runtime"
 	"strings"
 	"syscall"
+
+	"golang.org/x/term"
 
 	"github.com/racoonlemore/kdbx-secrets/internal/ref"
 	"github.com/racoonlemore/kdbx-secrets/internal/vault"
@@ -77,7 +80,8 @@ func hasField(s string) bool {
 // the terminal's process group), SIGTERM and SIGHUP are forwarded, and the
 // child is tied to this process. The server keeps answering until Wait returns.
 // Notify (not Ignore) so the child does not inherit an ignored SIGINT.
-func supervise(c *exec.Cmd) error {
+// started runs right after Start (the parent closes its PTY slaves there).
+func supervise(c *exec.Cmd, started func()) error {
 	runtime.LockOSThread() // Pdeathsig fires when the spawning thread dies
 	defer runtime.UnlockOSThread()
 	bind(c)
@@ -87,6 +91,7 @@ func supervise(c *exec.Cmd) error {
 	if err := c.Start(); err != nil {
 		return err
 	}
+	started()
 	if err := adopt(c); err != nil {
 		c.Process.Kill()
 		c.Wait()
@@ -109,27 +114,46 @@ func supervise(c *exec.Cmd) error {
 	return c.Wait()
 }
 
-const runUsage = "usage: run --vault <mount>/<path>=<reference>... -- <command> [args]"
+const runUsage = "usage: run --vault <mount>/<path>=<reference>... [--disable-redaction] (--command '<shell>' | -- <command> [args])"
 
 func cmdRun(env *Env, args []string) error {
 	var maps []mapping
 	seen := map[string]bool{}
+	command, redact := "", true
 	i := 0
-	for ; i < len(args) && args[i] != "--"; i += 2 {
-		if args[i] != "--vault" || i+1 >= len(args) {
+	for ; i < len(args) && args[i] != "--"; i++ {
+		switch {
+		case args[i] == "--disable-redaction":
+			redact = false
+		case args[i] == "--command" && i+1 < len(args) && command == "" && args[i+1] != "":
+			i++
+			command = args[i]
+		case args[i] == "--vault" && i+1 < len(args):
+			i++
+			m, err := parseVault(args[i], seen)
+			if err != nil {
+				return err
+			}
+			seen[m.target] = true
+			maps = append(maps, m)
+		default:
 			return usagef(runUsage)
 		}
-		m, err := parseVault(args[i+1], seen)
-		if err != nil {
-			return err
-		}
-		seen[m.target] = true
-		maps = append(maps, m)
 	}
-	if len(maps) == 0 || i+1 >= len(args) {
+	var cmdline []string
+	switch {
+	case len(maps) == 0 || (command != "") == (i < len(args)):
+		return usagef(runUsage)
+	case command != "":
+		cmdline = []string{"sh", "-c", command}
+		if runtime.GOOS == "windows" {
+			cmdline = []string{"cmd", "/C", command}
+		}
+	case i+1 < len(args):
+		cmdline = args[i+1:]
+	default:
 		return usagef(runUsage)
 	}
-	cmdline := args[i+1:]
 
 	var raws []string
 	for _, m := range maps {
@@ -140,12 +164,18 @@ func cmdRun(env *Env, args []string) error {
 		return err
 	}
 	scope := vault.Scope{}
+	var fields []map[string]string
 	for _, m := range maps {
 		f, seed, err := ref.Snapshot(d, m.ref)
 		if err != nil {
 			return err
 		}
 		scope[m.target] = vault.Secret{Fields: f, Seed: seed}
+		fields = append(fields, f)
+	}
+	var vals []string
+	if redact {
+		vals = redactValues(fields)
 	}
 	d = nil // the rest of the Database is garbage from here on
 
@@ -157,8 +187,15 @@ func cmdRun(env *Env, args []string) error {
 
 	c := exec.Command(cmdline[0], cmdline[1:]...)
 	c.Env = append(env.environ(), "VAULT_ADDR=http://"+srv.Addr, "VAULT_TOKEN="+srv.Token)
-	c.Stdin, c.Stdout, c.Stderr = env.Stdin, env.Stdout, env.Stderr
-	err = supervise(c)
+	c.Stdin = env.Stdin
+	var startedOut, startedErr, finishOut, finishErr func()
+	c.Stdout, startedOut, finishOut = redactStream(env.Stdout, vals)
+	c.Stderr, startedErr, finishErr = redactStream(env.Stderr, vals)
+	err = supervise(c, func() { startedOut(); startedErr() })
+	startedOut()
+	startedErr()
+	finishOut()
+	finishErr()
 	var ee *exec.ExitError
 	switch {
 	case err == nil:
@@ -172,4 +209,25 @@ func cmdRun(env *Env, args []string) error {
 		}
 	}
 	return fmt.Errorf("command %q: %w", cmdline[0], err)
+}
+
+// redactStream gives the child a stream to dst that hides vals. A terminal
+// gets a PTY so the child still sees one. started closes the parent's copy of
+// the PTY slave (call after Start, and again if Start failed); finish runs
+// after Wait and writes what the redactor held back.
+// ponytail: like a plain pipe, finish waits for every holder of the stream
+// (a daemonized grandchild keeps run alive until it closes its output).
+func redactStream(dst io.Writer, vals []string) (child io.Writer, started, finish func()) {
+	if len(vals) == 0 {
+		return dst, func() {}, func() {}
+	}
+	r := newRedactor(dst, vals)
+	if f, ok := dst.(*os.File); ok && term.IsTerminal(int(f.Fd())) {
+		if master, slave, err := openPty(f); err == nil {
+			done := make(chan struct{})
+			go func() { io.Copy(r, master); close(done) }() // EIO once every slave is closed
+			return slave, func() { slave.Close() }, func() { <-done; master.Close(); r.Close() }
+		}
+	}
+	return r, func() {}, func() { r.Close() } // exec copies into r; Wait waits for EOF
 }
